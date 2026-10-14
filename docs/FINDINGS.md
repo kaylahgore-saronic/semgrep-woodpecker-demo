@@ -176,10 +176,60 @@ command without `--dryrun` applies it for real:
 
 Autofix is never run inside CI in this repo -- only demoed locally.
 
+## Environment note: Docker image pulls are blocked in this environment
+
+Fresh `docker pull`s through this machine's colima VM (and even raw-IP traffic from
+the host) time out -- looks like corporate network/VPN egress filtering, not a
+Semgrep or Woodpecker issue. This blocks pulling the `semgrep/semgrep` container image
+and, more importantly, blocks **all of Phase 3** (kind cluster, ingress-nginx,
+Forgejo, Woodpecker -- every one of those needs a fresh image/chart pull). Per the
+plan's own ground rule ("if something differs, use what works and record it"):
+`.woodpecker/semgrep.yaml` and `.woodpecker/semgrep-custom.yaml` are unchanged and
+correct as container-image pipelines (that's what actually runs once a real
+Woodpecker agent -- with working network -- executes them). For local validation in
+this environment, a temporary copy with `image: semgrep/semgrep:1.180.0` swapped to
+`image: bash` was run through `woodpecker-cli exec --backend-engine local`, which
+executes step `commands:` directly against the host's natively-installed `semgrep`
+(same version, `1.180.0`) instead of in a container. This is a deliberate,
+documented substitution for local testing only -- never committed to the repo --
+not a change to the actual pipeline definition. Phase 3 is deferred until network
+access is restored.
+
+## Diff-aware scanning (feature 4.2)
+
+Demonstrated locally and fully working, using `woodpecker-cli exec`'s push-event
+simulation (`--prev-commit-sha`) rather than a live pull-request (that needs a real
+Woodpecker server to populate `CI_COMMIT_TARGET_BRANCH` from PR metadata -- deferred
+to Phase 3; `woodpecker-cli exec` has no CLI flag to set that variable directly for
+local testing, confirmed by checking `woodpecker-cli exec --help` for every
+`CI_COMMIT_*`/`CI_PREV_COMMIT_*` flag).
+
+Setup: commit `139ca4d` (legacy baseline, several pre-existing findings) → commit
+`b82225e` adds exactly one new issue (`aws_s3_bucket.reports` with no `owner` tag).
+
+- **Full (non-diff-aware) scan of the new commit:** 13 total findings (all legacy + the 1 new one).
+- **`--baseline-commit 139ca4d` scan of the new commit:** exactly **1 finding** -- `rules.terraform.s3-required-owner-tag` on the new `aws_s3_bucket.reports` resource, line 108. Semgrep's own log makes the mechanism explicit: `Creating git worktree from '139ca4d...' to scan baseline` / `Will report findings introduced by these commits`. Exit code 1 (correctly blocks on the new issue).
+- **`--baseline-commit <same commit as HEAD>` (simulating "no new issues since last push"):** 0 findings, exit code 0 -- passes cleanly despite 13 legacy findings existing in a full scan of the same tree.
+
+This proves the core diff-aware mechanism end-to-end: legacy findings never block, only newly-introduced findings do.
+
+## Severity gating (feature 4.3)
+
+`.woodpecker/semgrep.yaml`'s `severity-gate-demo` step runs `p/terraform` twice:
+`--severity ERROR --error` (blocking) then the same scan with no severity filter
+(reporting only, `|| true`). Verified locally: every one of `p/terraform`'s findings
+on `terraform/main.tf` is WARNING level, so the ERROR-only gate reports **0 findings
+and passes** (`Findings: 0 (0 blocking)`), while the unfiltered reporting run in the
+same step still shows the same **3 WARNING findings** it always does. This is the
+exact mechanism the plan asked to demonstrate: severity-gating controls which
+findings are allowed to fail a build, independent of whether those findings exist.
+(Separately, `terraform-scan` and `kubernetes-scan` deliberately gate on
+`ERROR + WARNING` so the overall demo build still fails on these samples -- the two
+steps are testing different things, not contradicting each other.)
+
 ## Still to document in later phases
 
-- Diff-aware scanning (`--baseline-commit`) results against the PR scenario.
-- Severity gating results (blocking-on-ERROR step vs. reporting-all-severities step).
 - Vendored/offline rule run results (feature 4.8).
 - Pre-commit hook pass/fail demo (feature 4.9).
 - GitHub code scanning alert screenshot/link (feature 4.11).
+- Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.

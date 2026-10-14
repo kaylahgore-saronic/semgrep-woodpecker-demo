@@ -48,6 +48,22 @@ steps:
       - event: [push, pull_request]
         status: [success, failure]
 
+  # Feature 4.3 demo: ERROR-only severity gating. All of p/terraform's findings on
+  # these samples are WARNING level, so this step passes even though the plain
+  # terraform-scan step above (which also gates on WARNING) fails -- illustrating
+  # that --severity controls which findings can block a build, independent of
+  # whether they exist at all.
+  - name: severity-gate-demo
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - echo "-- ERROR-only gate (blocking) --"
+      - semgrep scan --config p/terraform --severity ERROR --error --metrics=off terraform/
+      - echo "-- all severities (reporting only, does not affect this step's exit code) --"
+      - semgrep scan --config p/terraform --metrics=off terraform/ || true
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+
   - name: secrets-and-audit-scan
     image: semgrep/semgrep:1.180.0
     commands:
