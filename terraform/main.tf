@@ -102,6 +102,13 @@ resource "aws_iam_policy" "overly_permissive" {
   })
 }
 
+# NEW (diff-aware scanning demo, feature 4.2): a second untagged bucket added on top of
+# the already-present "logs" bucket finding. A diff-aware scan against the previous
+# commit should report only this one, not "logs" again.
+resource "aws_s3_bucket" "reports" {
+  bucket = "saronic-demo-reports-bucket"
+}
+
 # Correctly-tagged bucket, used as an `ok` example for the custom owner-tag rule.
 resource "aws_s3_bucket" "artifacts" {
   bucket = "saronic-demo-artifacts-bucket"
