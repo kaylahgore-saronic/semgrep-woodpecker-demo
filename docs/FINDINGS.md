@@ -281,7 +281,28 @@ wrote and own outright -- needs **no network access at all**. Proven by forcing
   hangs indefinitely (killed after 12s) -- confirming registry packs genuinely
   require network access, local config genuinely doesn't.
 
+## GitHub code scanning (feature 4.11)
+
+Pushed to a new public repo under the author's personal GitHub account:
+<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo>. The
+`.github/workflows/semgrep.yaml` run succeeded
+(<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo/actions>), and the
+Security tab shows **13 real alerts**:
+<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo/security/code-scanning>.
+
+**A genuine, non-obvious gotcha found here:** the `# nosemgrep`-suppressed RDS
+password finding (`terraform.lang.security.rds-insecure-password-storage-in-source-code`,
+line 82) is correctly absent from Semgrep's own text/JSON output, and Semgrep *does*
+mark it in the SARIF file per spec -- the result object carries
+`"suppressions": [{"kind": "inSource"}]`. But GitHub's code-scanning alert for this
+exact finding (alert #12) still shows `state: open` (confirmed via
+`gh api .../code-scanning/alerts/12`), not dismissed. GitHub's SARIF ingestion does
+not appear to honor the standard SARIF `suppressions` field by default. Practical
+implication: a `# nosemgrep` suppression hides a finding from the CLI/CI gate, but
+if you also upload SARIF to GitHub code scanning, the suppressed finding will still
+show up as an open alert there -- the two surfaces can disagree. Worth knowing before
+assuming "I suppressed it in code" means "it's gone everywhere."
+
 ## Still to document in later phases
 
-- GitHub code scanning alert screenshot/link (feature 4.11).
 - Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.
