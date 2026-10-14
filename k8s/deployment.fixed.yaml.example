@@ -1,0 +1,43 @@
+# Reference: what k8s/deployment.yaml looks like with every planted finding remediated.
+# Not a scan target (excluded via .semgrepignore's `*.example` pattern) -- this is what
+# the `fixed` git branch's k8s/deployment.yaml actually contains.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  labels:
+    app: demo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      containers:
+        - name: demo-app
+          image: nginx:1.27.2
+          securityContext:
+            privileged: false
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          env:
+            - name: DEMO_MODE
+              value: "true"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-app-secrets
+                  key: db-password
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
