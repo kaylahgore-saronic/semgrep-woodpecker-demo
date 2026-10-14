@@ -1,0 +1,13 @@
+# Offline/vendored-rules variant (feature 4.8, option A): runs only on the
+# org's own custom rules (rules/), with no registry packs and no telemetry, so it
+# needs no network access at all. See docs/CE-VS-PAID.md and docs/FINDINGS.md for
+# why this repo doesn't vendor Semgrep Registry packs (p/terraform, p/kubernetes,
+# etc.) for option B -- the Semgrep Rules License only permits internal use, and
+# this repo is public.
+steps:
+  - name: offline-custom-rules-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config rules/ --error --metrics=off terraform/ k8s/deployment.yaml
+    when:
+      - event: [push, pull_request, manual]

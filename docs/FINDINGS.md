@@ -253,8 +253,35 @@ Two gotchas found by testing, not documented clearly anywhere:
 (reports the same real findings from `terraform/main.tf` and `k8s/deployment.yaml`,
 no fixture noise). The same run against the `fixed` branch's content -- Passed.
 
+## Offline / local-only rules (feature 4.8)
+
+**Only option A (local `--config rules/`) is implemented** -- option B (vendoring a
+snapshot of Semgrep Registry packs like `p/terraform`/`p/kubernetes` into
+`vendor/semgrep-rules/`) was deliberately **not** done, for a licensing reason found
+while researching this feature, not a technical one:
+
+The Semgrep Rules License v1.0 (confirmed at <https://semgrep.dev/legal/rules-license>,
+also linked from the `LICENSE` file in `github.com/semgrep/semgrep-rules`) grants use
+"only for your own internal business purposes" and explicitly states "this license
+does not allow you to distribute the rules, or to make them available to others as a
+service." This repo is pushed to a **public** GitHub repo (see feature 4.11) --
+committing vendored registry rule files there would make them available to anyone,
+which doesn't fit "internal business purposes." Vendoring a private, internal-only
+mirror for an org's own CI would likely be fine under this license, but that's not
+this repo's situation, so `vendor/semgrep-rules/` is intentionally left empty.
+
+What **is** demonstrated (`.woodpecker/semgrep-offline.yaml`, `offline-custom-rules-scan`
+step): running `semgrep scan --config rules/ --metrics=off` -- our own rules, which we
+wrote and own outright -- needs **no network access at all**. Proven by forcing
+`HTTPS_PROXY`/`HTTP_PROXY` to an unroutable address (`http://127.0.0.1:1`):
+
+- `--config rules/ --metrics=off` (local, no registry): completes normally, same
+  findings as always, in ~1s.
+- `--config p/terraform --metrics=off` (registry pack) with the same broken proxy:
+  hangs indefinitely (killed after 12s) -- confirming registry packs genuinely
+  require network access, local config genuinely doesn't.
+
 ## Still to document in later phases
 
-- Vendored/offline rule run results (feature 4.8).
 - GitHub code scanning alert screenshot/link (feature 4.11).
 - Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.
