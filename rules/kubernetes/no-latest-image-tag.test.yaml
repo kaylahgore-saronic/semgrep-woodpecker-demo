@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-latest
+spec:
+  containers:
+    - name: app
+      # ruleid: no-latest-image-tag
+      image: nginx:latest
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-untagged
+spec:
+  containers:
+    - name: app
+      # ruleid: no-latest-image-tag
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: good-pinned
+spec:
+  containers:
+    - name: app
+      # ok: no-latest-image-tag
+      image: nginx:1.27.2

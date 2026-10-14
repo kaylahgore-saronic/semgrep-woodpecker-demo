@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad
+spec:
+  containers:
+    - name: app
+      # ruleid: autofix-pin-nginx-tag
+      image: nginx:1.27.2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: good
+spec:
+  containers:
+    - name: app
+      # ok: autofix-pin-nginx-tag
+      image: nginx:1.27.2

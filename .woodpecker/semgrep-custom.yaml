@@ -1,0 +1,17 @@
+steps:
+  - name: validate-rules
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep --validate --config rules/
+    when:
+      - event: [push, pull_request, manual]
+        path: { include: ["rules/**"] }
+
+  - name: test-rules
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep --test rules/
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+        path: { include: ["rules/**"] }

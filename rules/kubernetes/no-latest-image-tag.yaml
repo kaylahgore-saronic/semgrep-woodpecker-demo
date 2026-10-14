@@ -1,0 +1,20 @@
+rules:
+  - id: no-latest-image-tag
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      Container images must be pinned to an explicit, non-'latest' tag (org policy).
+      Replace `image: <repo>:latest` or an untagged `image: <repo>` with a pinned
+      version, e.g. `image: <repo>:1.27.2`.
+    metadata:
+      owner: devsecops-team
+      rationale: >-
+        'latest' (or an implicit latest) is mutable and non-reproducible; a pinned
+        tag or digest is required so a deployment's contents can be audited later.
+      references:
+        - https://semgrep.dev/docs/writing-rules/rule-syntax
+    patterns:
+      - pattern: "image: $IMAGE"
+      - metavariable-regex:
+          metavariable: $IMAGE
+          regex: "^([^:]+|.*:latest)$"

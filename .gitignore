@@ -1,0 +1,7 @@
+# Semgrep scan output, generated locally and in CI -- never committed.
+semgrep.json
+semgrep.sarif
+*.sarif
+
+# Local-only CI stack state.
+kind-kubeconfig*.yaml

@@ -1,0 +1,18 @@
+# Semgrep already excludes some paths by default (e.g. /tests, /test, /vendors).
+# This only affects `semgrep scan` target discovery -- confirmed in docs/FINDINGS.md
+# that `semgrep --test` / `semgrep --validate` still see rules/ directly since they
+# take it as an explicit --config path, not a scanned target.
+
+# Reference/fixed-state files are not scan targets -- they exist only to show
+# "what the clean version looks like" and would otherwise double-count as zero-finding
+# noise in every pack run.
+*.example
+
+# Documentation and vendored (offline) rule snapshots are not scan targets.
+docs/
+vendor/semgrep-rules/
+
+# Custom rule test fixtures intentionally contain bad patterns (fake secrets, bad
+# configs) to exercise ruleid/ok assertions -- excluded from whole-repo pack scans
+# (e.g. p/secrets, p/security-audit) so they don't show up as unrelated noise.
+rules/

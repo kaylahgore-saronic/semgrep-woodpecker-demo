@@ -1,0 +1,82 @@
+steps:
+  - name: terraform-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config p/terraform --severity ERROR --severity WARNING --error --metrics=off terraform/
+    when:
+      - event: [push, pull_request, manual]
+
+  # Runs even if terraform-scan already failed, so one bad build still shows findings
+  # from both domains in a single set of logs, not just whichever step failed first.
+  - name: kubernetes-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config p/kubernetes --severity ERROR --severity WARNING --error --metrics=off k8s/deployment.yaml
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+
+  - name: custom-rules-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config rules/ --error --metrics=off terraform/ k8s/deployment.yaml
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+
+  # Diff-aware: on a push, baseline is the previous commit. On a PR, baseline is the
+  # merge-base with the PR's target branch (fetched explicitly since a shallow/partial
+  # clone may not have that branch's history locally).
+  - name: diff-aware-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - |
+        if [ -n "$CI_COMMIT_PULL_REQUEST" ]; then
+          git fetch origin "$CI_COMMIT_TARGET_BRANCH" --depth=1000 || true
+          BASELINE=$(git merge-base "origin/$CI_COMMIT_TARGET_BRANCH" HEAD || true)
+        else
+          BASELINE="$CI_PREV_COMMIT_SHA"
+        fi
+        echo "Baseline commit: ${BASELINE:-<none>}"
+        if [ -n "$BASELINE" ]; then
+          semgrep scan --config p/terraform --config p/kubernetes --config rules/ \
+            --baseline-commit "$BASELINE" --error --metrics=off terraform/ k8s/deployment.yaml
+        else
+          echo "No baseline commit available (first commit on this branch) -- skipping diff-aware scan."
+        fi
+    when:
+      - event: [push, pull_request]
+        status: [success, failure]
+
+  - name: secrets-and-audit-scan
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config p/secrets --config p/security-audit --metrics=off .
+    failure: ignore
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+
+  - name: sarif-and-json-output
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - semgrep scan --config p/terraform --config p/kubernetes --config rules/ --json-output=semgrep.json --sarif-output=semgrep.sarif --metrics=off terraform/ k8s/deployment.yaml
+    failure: ignore
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]
+
+  - name: summary
+    image: semgrep/semgrep:1.180.0
+    commands:
+      - |
+        if [ -f semgrep.json ]; then
+          echo "Findings by severity:"
+          jq -r '.results | group_by(.extra.severity) | map({severity: .[0].extra.severity, count: length}) | .[] | "\(.severity): \(.count)"' semgrep.json
+        else
+          echo "No semgrep.json found (sarif-and-json-output step may have failed)."
+        fi
+    failure: ignore
+    when:
+      - event: [push, pull_request, manual]
+        status: [success, failure]

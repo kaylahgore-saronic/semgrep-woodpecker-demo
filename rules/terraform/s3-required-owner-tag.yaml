@@ -1,0 +1,17 @@
+rules:
+  - id: s3-required-owner-tag
+    languages: [terraform]
+    severity: ERROR
+    message: >-
+      aws_s3_bucket resources must set an 'owner' tag so cost and incident
+      ownership can be attributed to a team. Add `tags = { ... owner = "<team>" ... }`.
+    metadata:
+      owner: devsecops-team
+      rationale: >-
+        Untagged buckets can't be attributed to a team during cost reviews or
+        security incidents; this is an org tagging policy, not an AWS default.
+      references:
+        - https://semgrep.dev/docs/writing-rules/rule-syntax
+    patterns:
+      - pattern: resource "aws_s3_bucket" "$NAME" { ... }
+      - pattern-not: resource "aws_s3_bucket" "$NAME" { ... tags = { ..., owner = "...", ... } ... }

@@ -1,0 +1,16 @@
+rules:
+  - id: autofix-pin-nginx-tag
+    languages: [yaml]
+    severity: WARNING
+    message: >-
+      `nginx:latest` should be pinned to a known-good version. Autofix rewrites it
+      to `nginx:1.27.2` as a safe, reviewable starting point -- always re-review the
+      suggested tag rather than trusting it blindly.
+    metadata:
+      owner: devsecops-team
+      rationale: >-
+        Demonstrates Semgrep autofix (feature 4.7). Deliberately narrow (nginx only)
+        so the rewrite is unambiguous; a general-purpose "pin anything" autofix is
+        not safe to run unattended.
+    fix: "image: nginx:1.27.2"
+    pattern: "image: nginx:latest"

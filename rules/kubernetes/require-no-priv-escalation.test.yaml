@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-missing
+spec:
+  containers:
+    - name: app
+      image: nginx:1.27.2
+      # ruleid: require-no-priv-escalation
+      securityContext:
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-explicit-true
+spec:
+  containers:
+    - name: app
+      image: nginx:1.27.2
+      # ruleid: require-no-priv-escalation
+      securityContext:
+        runAsUser: 1000
+        allowPrivilegeEscalation: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: good
+spec:
+  containers:
+    - name: app
+      image: nginx:1.27.2
+      # ok: require-no-priv-escalation
+      securityContext:
+        runAsUser: 1000
+        allowPrivilegeEscalation: false

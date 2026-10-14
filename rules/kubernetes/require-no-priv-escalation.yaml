@@ -1,0 +1,24 @@
+rules:
+  - id: require-no-priv-escalation
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      Containers must explicitly set `securityContext.allowPrivilegeEscalation: false`
+      (org policy). Without it, a container can gain more privileges than its parent
+      process (e.g. via a setuid binary).
+    metadata:
+      owner: devsecops-team
+      rationale: >-
+        Kubernetes defaults allowPrivilegeEscalation to true when unset; this must be
+        explicitly disabled rather than left to the cluster default.
+      references:
+        - https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+    patterns:
+      - pattern: |
+          securityContext:
+            ...
+      - pattern-not: |
+          securityContext:
+            ...
+            allowPrivilegeEscalation: false
+            ...
