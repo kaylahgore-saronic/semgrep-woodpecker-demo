@@ -1,7 +1,7 @@
-## Semgrep demo: intentionally insecure Terraform.
-## Every resource here plants one or more known findings for p/terraform, p/secrets,
-## and the custom org rule in rules/terraform/. Never run `terraform apply` against this.
-## Fake values only; there are no real cloud resources or credentials anywhere in this repo.
+## Reference: what terraform/main.tf looks like with every planted finding remediated.
+## Not a scan target (excluded via .semgrepignore's `*.example` pattern) -- this is what
+## the `fixed` git branch's terraform/main.tf actually contains, kept here too as an
+## easy side-by-side reference on every branch. Still never run `terraform apply` on this.
 
 terraform {
   required_providers {
@@ -13,45 +13,51 @@ terraform {
 }
 
 provider "aws" {
-  region     = "us-east-1"
-  # Finding: hardcoded fake credentials (p/secrets).
-  access_key = "AKIAIOSFODNN7EXAMPLE"
-  secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  region = "us-east-1"
+  # Credentials come from the environment / instance role, never hardcoded.
 }
 
-# Finding: S3 bucket with no `owner` tag (custom rule rules/terraform/s3-required-owner-tag.yaml).
-# Finding: public ACL (p/terraform).
 resource "aws_s3_bucket" "logs" {
   bucket = "saronic-demo-logs-bucket"
 
   tags = {
     Environment = "demo"
+    owner       = "devsecops-team"
   }
 }
 
 resource "aws_s3_bucket_acl" "logs_acl" {
   bucket = aws_s3_bucket.logs.id
-  acl    = "public-read"
+  acl    = "private"
 }
 
-# Finding: bucket has no server-side encryption configuration (p/terraform).
-# (intentionally omitted: aws_s3_bucket_server_side_encryption_configuration)
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs_encryption" {
+  bucket = aws_s3_bucket.logs.id
 
-# Finding: bucket has no versioning configuration (p/terraform) -- a known MISS,
-# several community Terraform rulesets don't check for this on its own; see docs/FINDINGS.md.
-# (intentionally omitted: aws_s3_bucket_versioning)
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
 
-# Finding: security group open to the world on SSH (p/terraform).
+resource "aws_s3_bucket_versioning" "logs_versioning" {
+  bucket = aws_s3_bucket.logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_security_group" "wide_open" {
   name        = "demo-wide-open-sg"
-  description = "Demo SG with an overly permissive ingress rule"
+  description = "Demo SG restricted to a known office CIDR"
 
   ingress {
-    description = "SSH from anywhere"
+    description = "SSH from the office network only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["203.0.113.0/24"]
   }
 
   egress {
@@ -62,47 +68,51 @@ resource "aws_security_group" "wide_open" {
   }
 }
 
-# Finding: unencrypted EBS volume (p/terraform).
 resource "aws_ebs_volume" "data" {
   availability_zone = "us-east-1a"
   size              = 10
-  encrypted         = false
+  encrypted         = true
 }
 
-# Finding: RDS instance with no storage encryption and a hardcoded fake password (p/terraform + p/secrets).
 resource "aws_db_instance" "demo" {
-  identifier          = "saronic-demo-db"
-  engine              = "postgres"
-  engine_version      = "15.4"
-  instance_class      = "db.t3.micro"
-  allocated_storage   = 20
-  username            = "demo_admin"
-  # Justified suppression: this is a fake, demo-only credential (never a real DB password),
-  # kept here specifically to demonstrate feature 4.4 (inline suppression). See docs/FINDINGS.md.
-  password            = "SuperSecretPassw0rd!" # nosemgrep: terraform.lang.security.rds-insecure-password-storage-in-source-code.rds-insecure-password-storage-in-source-code
-  storage_encrypted   = false
-  publicly_accessible = true
-  skip_final_snapshot = true
+  identifier                      = "saronic-demo-db"
+  engine                          = "postgres"
+  engine_version                  = "15.4"
+  instance_class                  = "db.t3.micro"
+  allocated_storage               = 20
+  username                        = "demo_admin"
+  password                        = var.db_password
+  storage_encrypted               = true
+  publicly_accessible             = false
+  skip_final_snapshot             = true
+  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+
+  tags = {
+    Environment = "demo"
+    owner       = "devsecops-team"
+  }
 }
 
-# Finding: IAM policy with wildcard actions/resources (p/terraform) -- KNOWN MISS candidate,
-# kept to confirm whether the pack flags inline wildcard policies; documented either way.
-resource "aws_iam_policy" "overly_permissive" {
-  name = "demo-admin-everything"
+variable "db_password" {
+  type      = string
+  sensitive = true
+}
+
+resource "aws_iam_policy" "scoped_access" {
+  name = "demo-scoped-s3-read"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Effect   = "Allow"
-        Action   = "*"
-        Resource = "*"
+        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [aws_s3_bucket.logs.arn, "${aws_s3_bucket.logs.arn}/*"]
       }
     ]
   })
 }
 
-# Correctly-tagged bucket, used as an `ok` example for the custom owner-tag rule.
 resource "aws_s3_bucket" "artifacts" {
   bucket = "saronic-demo-artifacts-bucket"
 

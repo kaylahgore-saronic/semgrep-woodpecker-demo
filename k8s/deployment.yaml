@@ -1,7 +1,6 @@
-# Semgrep demo: intentionally insecure Kubernetes manifest.
-# This is a SCAN TARGET only -- unrelated to k8s/ci-stack/, which hosts the CI tooling itself.
-# Every object here plants one or more known findings for p/kubernetes, p/secrets,
-# and the custom org rules in rules/kubernetes/. Never apply this to a real cluster.
+# Reference: what k8s/deployment.yaml looks like with every planted finding remediated.
+# Not a scan target (excluded via .semgrepignore's `*.example` pattern) -- this is what
+# the `fixed` git branch's k8s/deployment.yaml actually contains.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,59 +17,8 @@ spec:
       labels:
         app: demo-app
     spec:
-      # Finding: hostNetwork exposes the pod directly on the node's network namespace (p/kubernetes).
-      hostNetwork: true
       containers:
         - name: demo-app
-          # Finding: no tag pinned / `latest` tag (custom rule rules/kubernetes/no-latest-image-tag.yaml).
-          image: nginx:latest
-          securityContext:
-            # Finding: privileged container (p/kubernetes).
-            privileged: true
-            # Finding: running as root (p/kubernetes).
-            runAsUser: 0
-            # Finding: allowPrivilegeEscalation not disabled (custom rule
-            # rules/kubernetes/require-no-priv-escalation.yaml).
-            allowPrivilegeEscalation: true
-          env:
-            - name: DEMO_MODE
-              value: "true"
-            # Finding: hardcoded fake secret in a plain env var -- KNOWN MISS, p/secrets did not
-            # flag this in testing (its generic hardcoded-password detectors don't appear to cover
-            # plain YAML key/value env vars the way they do source-code assignments). See docs/FINDINGS.md.
-            - name: DB_PASSWORD
-              value: "SuperSecretPassw0rd!"
-          # Finding: no resource requests/limits set (p/kubernetes) -- KNOWN MISS candidate,
-          # some packs only warn on this at WARNING/INFO severity; documented in docs/FINDINGS.md.
-          volumeMounts:
-            - name: host-root
-              mountPath: /host
-      volumes:
-        # Finding: hostPath mount of a sensitive host directory (p/kubernetes).
-        - name: host-root
-          hostPath:
-            path: /
-            type: Directory
----
-# Correctly-configured sibling deployment, used as an `ok` example for the custom rules.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: demo-app-safe
-  labels:
-    app: demo-app-safe
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: demo-app-safe
-  template:
-    metadata:
-      labels:
-        app: demo-app-safe
-    spec:
-      containers:
-        - name: demo-app-safe
           image: nginx:1.27.2
           securityContext:
             privileged: false
@@ -78,6 +26,14 @@ spec:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+          env:
+            - name: DEMO_MODE
+              value: "true"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-app-secrets
+                  key: db-password
           resources:
             requests:
               cpu: "100m"
@@ -85,6 +41,3 @@ spec:
             limits:
               cpu: "250m"
               memory: "256Mi"
-          env:
-            - name: DEMO_MODE
-              value: "true"
