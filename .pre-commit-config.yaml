@@ -1,0 +1,19 @@
+repos:
+  - repo: https://github.com/semgrep/pre-commit
+    rev: v1.180.0
+    hooks:
+      - id: semgrep
+        name: semgrep (CE, local run -- no platform login)
+        types_or: [terraform, yaml]
+        # pre-commit passes an explicit file list to the hook, which bypasses
+        # .semgrepignore entirely (that file only governs semgrep's own directory
+        # scanning) -- exclude the custom-rule test fixtures here too, or their
+        # intentionally-bad ruleid/ok patterns get flagged as real findings.
+        exclude: ^rules/
+        args:
+          - scan
+          - --config=p/terraform
+          - --config=p/kubernetes
+          - --config=rules/
+          - --error
+          - --metrics=off

@@ -227,9 +227,34 @@ findings are allowed to fail a build, independent of whether those findings exis
 `ERROR + WARNING` so the overall demo build still fails on these samples -- the two
 steps are testing different things, not contradicting each other.)
 
+## Pre-commit hook (feature 4.9)
+
+`.pre-commit-config.yaml` uses the official `https://github.com/semgrep/pre-commit`
+repo (not `returntocorp`, which is the old name), hook id `semgrep` (the CE/no-login
+hook -- not `semgrep-ci`, which requires a logged-in Semgrep account), pinned to
+`v1.180.0` -- matching the exact Semgrep CLI version used everywhere else in this
+repo, confirmed current via `git ls-remote --tags`.
+
+Two gotchas found by testing, not documented clearly anywhere:
+
+1. **`types: [terraform, yaml]` uses AND, not OR.** A file must match every listed
+   type, so a `.tf` file (type `terraform`) and a `.yaml` file (type `yaml`) can
+   never both satisfy `types: [terraform, yaml]` -- the hook silently ran on zero
+   files. Fixed by using `types_or: [terraform, yaml]` instead.
+2. **`.semgrepignore` has no effect on pre-commit runs.** pre-commit passes an
+   explicit list of staged files as CLI arguments to the hook; semgrep then scans
+   exactly those files, bypassing the directory-tree-scanning logic that
+   `.semgrepignore` governs. Without an additional `exclude: ^rules/` on the hook
+   itself, the custom-rule test fixtures (which intentionally contain bad patterns)
+   got flagged as if they were real findings. Added `exclude: ^rules/` to the hook
+   config to match `.semgrepignore`'s intent for this one additional entry point.
+
+**Proof:** `pre-commit run --all-files` against the samples on `main` -- Failed
+(reports the same real findings from `terraform/main.tf` and `k8s/deployment.yaml`,
+no fixture noise). The same run against the `fixed` branch's content -- Passed.
+
 ## Still to document in later phases
 
 - Vendored/offline rule run results (feature 4.8).
-- Pre-commit hook pass/fail demo (feature 4.9).
 - GitHub code scanning alert screenshot/link (feature 4.11).
 - Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.
