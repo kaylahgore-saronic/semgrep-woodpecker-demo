@@ -1,0 +1,48 @@
+# Helm values for the official Forgejo chart (Phase 3), hosting the forge that
+# triggers Woodpecker builds. NOT verified end-to-end yet -- see README.md/
+# docs/FINDINGS.md for why (network blocked while building this repo).
+#
+# Install with:
+#   helm install forgejo oci://code.forgejo.org/forgejo-helm/forgejo \
+#     --namespace ci-stack --create-namespace \
+#     -f k8s/ci-stack/forgejo-values.yaml
+#
+# Re-check this chart's current values.yaml (`helm show values
+# oci://code.forgejo.org/forgejo-helm/forgejo`) before applying -- chart versions
+# lag Forgejo releases, and exact key names (e.g. the admin-bootstrap key) may
+# differ from what's drafted here.
+
+image:
+  tag: "11" # pin an explicit Forgejo version at install time; do not trust chart default
+
+persistence:
+  enabled: true
+  size: 2Gi
+
+postgresql:
+  enabled: true # let the chart bundle its own Postgres -- simplest for a local demo
+
+gitea: # the Forgejo chart is a Gitea-chart fork; most config keys still live under `gitea`
+  admin:
+    username: demo-admin
+    password: "" # set via --set or a separate Secret at install time, never committed
+    email: demo-admin@example.invalid
+  config:
+    server:
+      DOMAIN: forgejo.localtest.me
+      ROOT_URL: "http://forgejo.localtest.me/"
+    webhook:
+      ALLOWED_HOST_LIST: "external,loopback" # required so in-cluster webhooks to Woodpecker aren't blocked
+
+service:
+  http:
+    type: ClusterIP
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: forgejo.localtest.me
+      paths:
+        - path: /
+          pathType: Prefix

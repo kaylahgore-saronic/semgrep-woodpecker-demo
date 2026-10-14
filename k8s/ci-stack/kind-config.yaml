@@ -1,0 +1,27 @@
+# Local kind cluster hosting Forgejo + Woodpecker for this demo (Phase 3).
+# NOT a scan target -- this hosts the CI tooling, unrelated to k8s/deployment.yaml.
+# Usage: kind create cluster --name semgrep-demo --config k8s/ci-stack/kind-config.yaml
+#
+# NOTE (2026-10-14): building this on a machine where Docker image pulls currently
+# time out (corporate network/VPN egress filtering -- see docs/FINDINGS.md). This
+# file is prepared and believed correct per kind's own docs, but has not yet been
+# run end-to-end. Re-verify the ingress-nginx manifest URL and kind version before
+# relying on this once network access is restored.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
+  - role: worker

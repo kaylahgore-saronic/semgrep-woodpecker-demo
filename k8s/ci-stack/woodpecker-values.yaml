@@ -1,0 +1,55 @@
+# Helm values for the official Woodpecker umbrella chart (server + agent), Phase 3.
+# NOT verified end-to-end yet -- see README.md/docs/FINDINGS.md for why.
+#
+# Install with (after creating the `woodpecker-forgejo-oauth` secret with
+# WOODPECKER_FORGEJO_CLIENT / WOODPECKER_FORGEJO_SECRET from the Forgejo OAuth app
+# you create via the Forgejo UI first):
+#   helm repo add woodpecker-ci https://woodpecker-ci.org/helm   # verify this URL is still current
+#   helm install woodpecker woodpecker-ci/woodpecker \
+#     --namespace ci-stack \
+#     -f k8s/ci-stack/woodpecker-values.yaml
+#
+# Critical gotcha (see docs/FINDINGS.md): WOODPECKER_FORGEJO_URL and this chart's
+# own ingress host MUST be the same externally-resolvable hostname reachable from
+# a host browser -- in-cluster *.svc.cluster.local DNS does not work for the
+# browser-driven OAuth redirect.
+
+server:
+  image:
+    tag: "v3.19.0" # ≥ v3.16.0 required (CVE-2026-61549 fix in the k8s backend)
+
+  env:
+    WOODPECKER_OPEN: "true"
+    WOODPECKER_FORGEJO: "true"
+    WOODPECKER_FORGEJO_URL: "http://forgejo.localtest.me"
+    WOODPECKER_HOST: "http://woodpecker.localtest.me"
+
+  envFromSecrets:
+    # Secret must define WOODPECKER_FORGEJO_CLIENT_FILE / WOODPECKER_FORGEJO_SECRET_FILE
+    # pointing at mounted files, per the chart's _FILE-suffix convention -- don't
+    # put the client secret in this values file directly.
+    - woodpecker-forgejo-oauth
+
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: woodpecker.localtest.me
+        paths:
+          - path: /
+            pathType: Prefix
+
+agent:
+  image:
+    tag: "v3.19.0"
+
+  env:
+    WOODPECKER_BACKEND: "kubernetes"
+    # Keep this at its safe default (false) -- do not allow pipelines to request an
+    # arbitrary serviceAccountName (CVE-2026-61549).
+    WOODPECKER_BACKEND_K8S_SERVICE_ACCOUNT_NAME_ALLOW_FROM_STEP: "false"
+
+  serviceAccount:
+    create: true
+    rbac:
+      create: true # chart auto-creates the Role/RoleBinding the agent needs to run step pods
