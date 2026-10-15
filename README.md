@@ -20,8 +20,9 @@ fake.
 .semgrepignore          Scan-target exclusions
 rules/                  Custom org-policy rules + their test fixtures (ruleid/ok)
 terraform/, k8s/        Intentionally-vulnerable scan targets, plus *.example "fixed" references
-k8s/ci-stack/           Kind cluster config + Helm values for hosting Forgejo + Woodpecker locally
-                        (hosts the CI; unrelated to k8s/deployment.yaml, the scan target)
+docker-compose.yaml     Forgejo + Woodpecker server + agent, hosting the CI locally
+                        (unrelated to k8s/deployment.yaml, the scan target)
+.env.example            Template for docker-compose's secrets (copy to .env, never commit .env)
 vendor/semgrep-rules/   Intentionally empty -- see docs/FINDINGS.md (licensing)
 scripts/                scan-local.sh (same scans as CI) + demo-walkthrough.md
 docs/                   FINDINGS.md, CE-VS-PAID.md
@@ -35,12 +36,10 @@ planted issue remediated -- pipelines pass).
 | Tool | Version |
 |---|---|
 | Semgrep CLI / `semgrep/semgrep` image | `1.180.0` |
-| Woodpecker CLI / server / agent | `3.19.0` (≥ v3.16.0 required -- fixes CVE-2026-61549 in the Kubernetes backend) |
+| Woodpecker CLI / server / agent | `3.19.0` (≥ v3.16.0 required -- fixes CVE-2026-61549) |
+| Forgejo (`codeberg.org/forgejo/forgejo`) | `16` |
 | `semgrep/pre-commit` hook | `v1.180.0` |
 | `github/codeql-action/upload-sarif` | `v4` |
-| kind | `0.33.0` |
-| kubectl | `v1.37.0` |
-| Helm | `v4.2.4` |
 
 ## Quick start
 
@@ -55,16 +54,34 @@ pipx install semgrep==1.180.0   # or: brew install semgrep
 - **Phase 2 (Woodpecker pipeline via `woodpecker-cli exec`):** done. Pipeline fails
   on `main`, passes on `fixed`. Diff-aware scanning and severity gating both
   verified locally (`docs/FINDINGS.md`).
-- **Phase 3 (Forgejo + Woodpecker hosted on a local kind cluster):** **blocked**,
-  not a design problem -- the development machine used to build this currently
-  can't pull fresh Docker images at all (colima VM networking times out on every
-  new pull, even though some older images were cached from before; looks like
-  corporate VPN/network egress filtering, confirmed by testing raw-IP connectivity
-  from the host itself, which also times out). This blocks every image/chart pull
-  Phase 3 needs (kind node image already cached from prior work, but ingress-nginx,
-  Forgejo, and the Woodpecker Helm charts are not). `k8s/ci-stack/` holds the kind
-  config and Helm values prepared and ready to run once network access is
-  restored; see `docs/FINDINGS.md` for the exact retry steps.
+- **Phase 3 (Forgejo + Woodpecker hosted via `docker-compose`):** **blocked**, not a
+  design problem. `docker-compose.yaml` is written against current upstream docs,
+  syntax-validated (`docker-compose config` succeeds), but every attempt to
+  actually bring up a service hangs indefinitely pulling its image. The
+  development machine used to build this currently can't get fresh Docker images
+  into its colima VM at all, under any configuration tried:
+  - A plain `docker pull` of any image not already cached locally times out at the
+    TCP level (`dial tcp ... i/o timeout`), while the exact same host machine
+    reaches the same registry/IP over its real network interface just fine.
+  - Disconnecting the corporate VPN (GlobalProtect) made no difference -- ruling
+    that out as the sole cause.
+  - `colima start --network-address` and `--network-mode bridged` (different VM
+    networking modes) made no difference either.
+  - From inside the VM itself (`colima ssh`), *nothing* is reachable -- not even a
+    raw IP, with or without VPN connected.
+  - This machine also runs CrowdStrike Falcon (EDR, installed as a macOS system
+    extension with its own network-filtering driver) -- the most likely remaining
+    candidate, since Falcon-style tools commonly block traffic from VM/bridged
+    interfaces by design, independent of VPN state.
+  - An alternative that avoids the VM/Docker entirely (installing `forgejo` via
+    Homebrew -- a real prebuilt macOS binary -- and building `woodpecker-server`/
+    `agent` from source with Go) was scoped but not attempted; real but unverified
+    build risk, parked per the author's direction to keep the Docker/compose path
+    as primary.
+  - **To retry:** confirm `docker pull alpine:3.20` succeeds first (fast, cheap
+    check), then `cp .env.example .env`, fill in `WOODPECKER_AGENT_SECRET`
+    (`openssl rand -hex 32`), run `docker-compose up -d forgejo`, and follow the
+    setup steps documented at the top of `docker-compose.yaml`.
 - **Phase 4 (GitHub code scanning, fixed branch, offline rules, pre-commit, docs):**
   done. See `docs/FINDINGS.md` for each feature's proof.
 

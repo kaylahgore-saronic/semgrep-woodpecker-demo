@@ -1,0 +1,91 @@
+# Local CI stack for this demo (Phase 3): Forgejo (forge) + Woodpecker server + agent.
+# Based on the official current docs:
+#   https://forgejo.org/docs/latest/admin/installation-docker/
+#   https://woodpecker-ci.org/docs/next/administration/installation/docker-compose
+#   https://woodpecker-ci.org/docs/next/administration/configuration/forges/forgejo
+#
+# One-time setup:
+#   1. cp .env.example .env   and fill in WOODPECKER_AGENT_SECRET (openssl rand -hex 32)
+#   2. docker compose up -d forgejo
+#   3. Add `127.0.0.1 forgejo woodpecker-server` to /etc/hosts (both services use these
+#      exact hostnames consistently for the browser AND for container-to-container
+#      calls -- see the note in README.md on why this matters for OAuth).
+#   4. Open http://forgejo:3000, finish Forgejo's first-run setup, create an admin user.
+#   5. Create an OAuth app in Forgejo (Settings -> Applications) with redirect URI
+#      exactly: http://woodpecker-server:8000/authorize
+#   6. Put that app's client id/secret into .env as WOODPECKER_FORGEJO_CLIENT /
+#      WOODPECKER_FORGEJO_SECRET, then: docker compose up -d
+#   7. Open http://woodpecker-server:8000, log in via the Forgejo OAuth button,
+#      activate this repo (pushed to your local Forgejo instance first).
+#
+# Status: written against current upstream docs but not yet run end-to-end in this
+# environment -- see README.md and docs/FINDINGS.md for why (Docker image pulls are
+# currently blocked here). Re-verify image tags/behavior once network access works.
+
+networks:
+  ci:
+    name: semgrep-demo-ci
+    external: false
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16
+    container_name: forgejo
+    hostname: forgejo
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__webhook__ALLOWED_HOST_LIST=external,loopback
+    restart: unless-stopped
+    networks:
+      - ci
+    volumes:
+      - forgejo-data:/data
+    ports:
+      - "3000:3000"
+
+  woodpecker-server:
+    image: woodpeckerci/woodpecker-server:v3.19.0
+    container_name: woodpecker-server
+    hostname: woodpecker-server
+    depends_on:
+      - forgejo
+    restart: unless-stopped
+    networks:
+      - ci
+    ports:
+      - "8000:8000"
+    volumes:
+      - woodpecker-server-data:/var/lib/woodpecker/
+    environment:
+      - WOODPECKER_OPEN=true
+      - WOODPECKER_HOST=http://woodpecker-server:8000
+      - WOODPECKER_FORGEJO=true
+      - WOODPECKER_FORGEJO_URL=http://forgejo:3000
+      - WOODPECKER_FORGEJO_CLIENT=${WOODPECKER_FORGEJO_CLIENT}
+      - WOODPECKER_FORGEJO_SECRET=${WOODPECKER_FORGEJO_SECRET}
+      - WOODPECKER_AGENT_SECRET=${WOODPECKER_AGENT_SECRET}
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:v3.19.0
+    container_name: woodpecker-agent
+    command: agent
+    restart: unless-stopped
+    depends_on:
+      - woodpecker-server
+    networks:
+      - ci
+    volumes:
+      - woodpecker-agent-config:/etc/woodpecker
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WOODPECKER_SERVER=woodpecker-server:9000
+      - WOODPECKER_AGENT_SECRET=${WOODPECKER_AGENT_SECRET}
+      # So pipeline step containers the agent creates share Forgejo's network too
+      # (needed for git clone/fetch against the forge by its internal hostname).
+      - WOODPECKER_BACKEND_DOCKER_NETWORK=semgrep-demo-ci
+
+volumes:
+  forgejo-data:
+  woodpecker-server-data:
+  woodpecker-agent-config:

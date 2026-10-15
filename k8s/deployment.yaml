@@ -1,5 +1,5 @@
 # Semgrep demo: intentionally insecure Kubernetes manifest.
-# This is a SCAN TARGET only -- unrelated to k8s/ci-stack/, which hosts the CI tooling itself.
+# This is a SCAN TARGET only -- unrelated to docker-compose.yaml, which hosts the CI tooling itself.
 # Every object here plants one or more known findings for p/kubernetes, p/secrets,
 # and the custom org rules in rules/kubernetes/. Never apply this to a real cluster.
 apiVersion: apps/v1

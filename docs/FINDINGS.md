@@ -178,22 +178,51 @@ Autofix is never run inside CI in this repo -- only demoed locally.
 
 ## Environment note: Docker image pulls are blocked in this environment
 
-Fresh `docker pull`s through this machine's colima VM (and even raw-IP traffic from
-the host) time out -- looks like corporate network/VPN egress filtering, not a
-Semgrep or Woodpecker issue. This blocks pulling the `semgrep/semgrep` container image
-and, more importantly, blocks **all of Phase 3** (kind cluster, ingress-nginx,
-Forgejo, Woodpecker -- every one of those needs a fresh image/chart pull). Per the
-plan's own ground rule ("if something differs, use what works and record it"):
-`.woodpecker/semgrep.yaml` and `.woodpecker/semgrep-custom.yaml` are unchanged and
-correct as container-image pipelines (that's what actually runs once a real
-Woodpecker agent -- with working network -- executes them). For local validation in
-this environment, a temporary copy with `image: semgrep/semgrep:1.180.0` swapped to
-`image: bash` was run through `woodpecker-cli exec --backend-engine local`, which
-executes step `commands:` directly against the host's natively-installed `semgrep`
-(same version, `1.180.0`) instead of in a container. This is a deliberate,
-documented substitution for local testing only -- never committed to the repo --
-not a change to the actual pipeline definition. Phase 3 is deferred until network
-access is restored.
+Fresh `docker pull`s through this machine's colima VM time out at the TCP level
+(`dial tcp ... i/o timeout`), and this blocks pulling the `semgrep/semgrep`
+container image and, more importantly, blocks **all of Phase 3** -- Forgejo and
+Woodpecker (server, agent) all need a fresh image pull via `docker-compose`.
+
+What was actually tried, across two sessions, to isolate the cause:
+
+- Plain `docker pull <anything not already cached>` on the colima daemon: always
+  times out. Images already cached from unrelated prior work (e.g. `kindest/node`,
+  `postgres`) still run fine -- only *new* pulls fail.
+- The host itself (outside the VM) reaches the same registry domains and even the
+  same raw IPs the VM times out on -- so this isn't a blanket block on the network
+  this machine is attached to.
+- Disconnecting the corporate VPN (GlobalProtect) and restarting colima fresh
+  afterward made no difference -- ruling out GlobalProtect/VPN split-tunneling as
+  the (sole) cause.
+- `colima start --network-address` (gives the VM its own routable IP) and
+  `--network-mode bridged` (puts it on the same network segment as the host) were
+  both tried -- neither changed the result.
+- From inside the VM directly (`colima ssh`), *nothing* is reachable at all -- not
+  even a raw IP by address, with or without the VPN connected. This is the
+  strongest signal: it's specifically the VM's network path that's filtered,
+  consistently, regardless of VPN state or colima's networking mode.
+- This machine also runs CrowdStrike Falcon (EDR, a macOS system extension with
+  its own network-filtering driver) alongside Jamf MDM management -- the most
+  likely remaining candidate, since EDR tools commonly block VM/bridged-interface
+  traffic by design, independent of VPN state. Confirming this for certain would
+  require reading this Mac's firewall/network-extension policy, which needs
+  `sudo` and wasn't pursued further -- this is a managed security-team laptop, and
+  working around an EDR/network control isn't something to attempt even if
+  technically possible; it needs an IT/security-team decision, not a client-side
+  workaround.
+
+Per the plan's own ground rule ("if something differs, use what works and record
+it"): `.woodpecker/semgrep.yaml` and `.woodpecker/semgrep-custom.yaml` are
+unchanged and correct as container-image pipelines (that's what actually runs once
+a real Woodpecker agent -- with working network -- executes them). For local
+validation in this environment, a temporary copy with `image:
+semgrep/semgrep:1.180.0` swapped to `image: bash` was run through `woodpecker-cli
+exec --backend-engine local`, which executes step `commands:` directly against the
+host's natively-installed `semgrep` (same version, `1.180.0`) instead of in a
+container. This is a deliberate, documented substitution for local testing only --
+never committed to the repo -- not a change to the actual pipeline definition.
+Phase 3 is deferred until network access is restored; see `docker-compose.yaml`'s
+header comment for the exact steps to retry once it is.
 
 ## Diff-aware scanning (feature 4.2)
 
