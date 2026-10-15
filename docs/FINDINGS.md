@@ -176,10 +176,162 @@ command without `--dryrun` applies it for real:
 
 Autofix is never run inside CI in this repo -- only demoed locally.
 
+## Environment note: Docker image pulls are blocked in this environment
+
+Fresh `docker pull`s through this machine's colima VM time out at the TCP level
+(`dial tcp ... i/o timeout`), and this blocks pulling the `semgrep/semgrep`
+container image and, more importantly, blocks **all of Phase 3** -- Forgejo and
+Woodpecker (server, agent) all need a fresh image pull via `docker-compose`.
+
+What was actually tried, across two sessions, to isolate the cause:
+
+- Plain `docker pull <anything not already cached>` on the colima daemon: always
+  times out. Images already cached from unrelated prior work (e.g. `kindest/node`,
+  `postgres`) still run fine -- only *new* pulls fail.
+- The host itself (outside the VM) reaches the same registry domains and even the
+  same raw IPs the VM times out on -- so this isn't a blanket block on the network
+  this machine is attached to.
+- Disconnecting the corporate VPN (GlobalProtect) and restarting colima fresh
+  afterward made no difference -- ruling out GlobalProtect/VPN split-tunneling as
+  the (sole) cause.
+- `colima start --network-address` (gives the VM its own routable IP) and
+  `--network-mode bridged` (puts it on the same network segment as the host) were
+  both tried -- neither changed the result.
+- From inside the VM directly (`colima ssh`), *nothing* is reachable at all -- not
+  even a raw IP by address, with or without the VPN connected. This is the
+  strongest signal: it's specifically the VM's network path that's filtered,
+  consistently, regardless of VPN state or colima's networking mode.
+- This machine also runs CrowdStrike Falcon (EDR, a macOS system extension with
+  its own network-filtering driver) alongside Jamf MDM management -- the most
+  likely remaining candidate, since EDR tools commonly block VM/bridged-interface
+  traffic by design, independent of VPN state. Confirming this for certain would
+  require reading this Mac's firewall/network-extension policy, which needs
+  `sudo` and wasn't pursued further -- this is a managed security-team laptop, and
+  working around an EDR/network control isn't something to attempt even if
+  technically possible; it needs an IT/security-team decision, not a client-side
+  workaround.
+
+Per the plan's own ground rule ("if something differs, use what works and record
+it"): `.woodpecker/semgrep.yaml` and `.woodpecker/semgrep-custom.yaml` are
+unchanged and correct as container-image pipelines (that's what actually runs once
+a real Woodpecker agent -- with working network -- executes them). For local
+validation in this environment, a temporary copy with `image:
+semgrep/semgrep:1.180.0` swapped to `image: bash` was run through `woodpecker-cli
+exec --backend-engine local`, which executes step `commands:` directly against the
+host's natively-installed `semgrep` (same version, `1.180.0`) instead of in a
+container. This is a deliberate, documented substitution for local testing only --
+never committed to the repo -- not a change to the actual pipeline definition.
+Phase 3 is deferred until network access is restored; see `docker-compose.yaml`'s
+header comment for the exact steps to retry once it is.
+
+## Diff-aware scanning (feature 4.2)
+
+Demonstrated locally and fully working, using `woodpecker-cli exec`'s push-event
+simulation (`--prev-commit-sha`) rather than a live pull-request (that needs a real
+Woodpecker server to populate `CI_COMMIT_TARGET_BRANCH` from PR metadata -- deferred
+to Phase 3; `woodpecker-cli exec` has no CLI flag to set that variable directly for
+local testing, confirmed by checking `woodpecker-cli exec --help` for every
+`CI_COMMIT_*`/`CI_PREV_COMMIT_*` flag).
+
+Setup: commit `139ca4d` (legacy baseline, several pre-existing findings) → commit
+`b82225e` adds exactly one new issue (`aws_s3_bucket.reports` with no `owner` tag).
+
+- **Full (non-diff-aware) scan of the new commit:** 13 total findings (all legacy + the 1 new one).
+- **`--baseline-commit 139ca4d` scan of the new commit:** exactly **1 finding** -- `rules.terraform.s3-required-owner-tag` on the new `aws_s3_bucket.reports` resource, line 108. Semgrep's own log makes the mechanism explicit: `Creating git worktree from '139ca4d...' to scan baseline` / `Will report findings introduced by these commits`. Exit code 1 (correctly blocks on the new issue).
+- **`--baseline-commit <same commit as HEAD>` (simulating "no new issues since last push"):** 0 findings, exit code 0 -- passes cleanly despite 13 legacy findings existing in a full scan of the same tree.
+
+This proves the core diff-aware mechanism end-to-end: legacy findings never block, only newly-introduced findings do.
+
+## Severity gating (feature 4.3)
+
+`.woodpecker/semgrep.yaml`'s `severity-gate-demo` step runs `p/terraform` twice:
+`--severity ERROR --error` (blocking) then the same scan with no severity filter
+(reporting only, `|| true`). Verified locally: every one of `p/terraform`'s findings
+on `terraform/main.tf` is WARNING level, so the ERROR-only gate reports **0 findings
+and passes** (`Findings: 0 (0 blocking)`), while the unfiltered reporting run in the
+same step still shows the same **3 WARNING findings** it always does. This is the
+exact mechanism the plan asked to demonstrate: severity-gating controls which
+findings are allowed to fail a build, independent of whether those findings exist.
+(Separately, `terraform-scan` and `kubernetes-scan` deliberately gate on
+`ERROR + WARNING` so the overall demo build still fails on these samples -- the two
+steps are testing different things, not contradicting each other.)
+
+## Pre-commit hook (feature 4.9)
+
+`.pre-commit-config.yaml` uses the official `https://github.com/semgrep/pre-commit`
+repo (not `returntocorp`, which is the old name), hook id `semgrep` (the CE/no-login
+hook -- not `semgrep-ci`, which requires a logged-in Semgrep account), pinned to
+`v1.180.0` -- matching the exact Semgrep CLI version used everywhere else in this
+repo, confirmed current via `git ls-remote --tags`.
+
+Two gotchas found by testing, not documented clearly anywhere:
+
+1. **`types: [terraform, yaml]` uses AND, not OR.** A file must match every listed
+   type, so a `.tf` file (type `terraform`) and a `.yaml` file (type `yaml`) can
+   never both satisfy `types: [terraform, yaml]` -- the hook silently ran on zero
+   files. Fixed by using `types_or: [terraform, yaml]` instead.
+2. **`.semgrepignore` has no effect on pre-commit runs.** pre-commit passes an
+   explicit list of staged files as CLI arguments to the hook; semgrep then scans
+   exactly those files, bypassing the directory-tree-scanning logic that
+   `.semgrepignore` governs. Without an additional `exclude: ^rules/` on the hook
+   itself, the custom-rule test fixtures (which intentionally contain bad patterns)
+   got flagged as if they were real findings. Added `exclude: ^rules/` to the hook
+   config to match `.semgrepignore`'s intent for this one additional entry point.
+
+**Proof:** `pre-commit run --all-files` against the samples on `main` -- Failed
+(reports the same real findings from `terraform/main.tf` and `k8s/deployment.yaml`,
+no fixture noise). The same run against the `fixed` branch's content -- Passed.
+
+## Offline / local-only rules (feature 4.8)
+
+**Only option A (local `--config rules/`) is implemented** -- option B (vendoring a
+snapshot of Semgrep Registry packs like `p/terraform`/`p/kubernetes` into
+`vendor/semgrep-rules/`) was deliberately **not** done, for a licensing reason found
+while researching this feature, not a technical one:
+
+The Semgrep Rules License v1.0 (confirmed at <https://semgrep.dev/legal/rules-license>,
+also linked from the `LICENSE` file in `github.com/semgrep/semgrep-rules`) grants use
+"only for your own internal business purposes" and explicitly states "this license
+does not allow you to distribute the rules, or to make them available to others as a
+service." This repo is pushed to a **public** GitHub repo (see feature 4.11) --
+committing vendored registry rule files there would make them available to anyone,
+which doesn't fit "internal business purposes." Vendoring a private, internal-only
+mirror for an org's own CI would likely be fine under this license, but that's not
+this repo's situation, so `vendor/semgrep-rules/` is intentionally left empty.
+
+What **is** demonstrated (`.woodpecker/semgrep-offline.yaml`, `offline-custom-rules-scan`
+step): running `semgrep scan --config rules/ --metrics=off` -- our own rules, which we
+wrote and own outright -- needs **no network access at all**. Proven by forcing
+`HTTPS_PROXY`/`HTTP_PROXY` to an unroutable address (`http://127.0.0.1:1`):
+
+- `--config rules/ --metrics=off` (local, no registry): completes normally, same
+  findings as always, in ~1s.
+- `--config p/terraform --metrics=off` (registry pack) with the same broken proxy:
+  hangs indefinitely (killed after 12s) -- confirming registry packs genuinely
+  require network access, local config genuinely doesn't.
+
+## GitHub code scanning (feature 4.11)
+
+Pushed to a new public repo under the author's personal GitHub account:
+<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo>. The
+`.github/workflows/semgrep.yaml` run succeeded
+(<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo/actions>), and the
+Security tab shows **13 real alerts**:
+<https://github.com/kaylahgore-saronic/semgrep-woodpecker-demo/security/code-scanning>.
+
+**A genuine, non-obvious gotcha found here:** the `# nosemgrep`-suppressed RDS
+password finding (`terraform.lang.security.rds-insecure-password-storage-in-source-code`,
+line 82) is correctly absent from Semgrep's own text/JSON output, and Semgrep *does*
+mark it in the SARIF file per spec -- the result object carries
+`"suppressions": [{"kind": "inSource"}]`. But GitHub's code-scanning alert for this
+exact finding (alert #12) still shows `state: open` (confirmed via
+`gh api .../code-scanning/alerts/12`), not dismissed. GitHub's SARIF ingestion does
+not appear to honor the standard SARIF `suppressions` field by default. Practical
+implication: a `# nosemgrep` suppression hides a finding from the CLI/CI gate, but
+if you also upload SARIF to GitHub code scanning, the suppressed finding will still
+show up as an open alert there -- the two surfaces can disagree. Worth knowing before
+assuming "I suppressed it in code" means "it's gone everywhere."
+
 ## Still to document in later phases
 
-- Diff-aware scanning (`--baseline-commit`) results against the PR scenario.
-- Severity gating results (blocking-on-ERROR step vs. reporting-all-severities step).
-- Vendored/offline rule run results (feature 4.8).
-- Pre-commit hook pass/fail demo (feature 4.9).
-- GitHub code scanning alert screenshot/link (feature 4.11).
+- Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.

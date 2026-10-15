@@ -1,0 +1,29 @@
+name: Semgrep code scanning
+
+on:
+  push:
+    branches: [main, fixed]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep-sarif:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:1.180.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep and emit SARIF
+        run: |
+          semgrep scan --config p/terraform --config p/kubernetes --config rules/ \
+            --sarif-output=semgrep.sarif --metrics=off terraform/ k8s/deployment.yaml
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
