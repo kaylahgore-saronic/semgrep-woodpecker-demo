@@ -54,49 +54,63 @@ pipx install semgrep==1.180.0   # or: brew install semgrep
 - **Phase 2 (Woodpecker pipeline via `woodpecker-cli exec`):** done. Pipeline fails
   on `main`, passes on `fixed`. Diff-aware scanning and severity gating both
   verified locally (`docs/FINDINGS.md`).
-- **Phase 3 (Forgejo + Woodpecker hosted via `docker-compose`):** **blocked**, not a
-  design problem. `docker-compose.yaml` is written against current upstream docs,
-  syntax-validated (`docker-compose config` succeeds), but every attempt to
-  actually bring up a service hangs indefinitely pulling its image. The
-  development machine used to build this currently can't get fresh Docker images
-  into its colima VM at all, under any configuration tried:
-  - A plain `docker pull` of any image not already cached locally times out at the
-    TCP level (`dial tcp ... i/o timeout`), while the exact same host machine
-    reaches the same registry/IP over its real network interface just fine.
-  - Disconnecting the corporate VPN (GlobalProtect) made no difference -- ruling
-    that out as the sole cause.
-  - `colima start --network-address` and `--network-mode bridged` (different VM
-    networking modes) made no difference either.
-  - From inside the VM itself (`colima ssh`), *nothing* is reachable -- not even a
-    raw IP, with or without VPN connected.
-  - This machine also runs CrowdStrike Falcon (EDR, installed as a macOS system
-    extension with its own network-filtering driver) -- the most likely remaining
-    candidate, since Falcon-style tools commonly block traffic from VM/bridged
-    interfaces by design, independent of VPN state.
-  - An alternative that avoids the VM/Docker entirely (installing `forgejo` via
-    Homebrew -- a real prebuilt macOS binary -- and building `woodpecker-server`/
-    `agent` from source with Go) was scoped but not attempted; real but unverified
-    build risk, parked per the author's direction to keep the Docker/compose path
-    as primary.
-  - **To retry:** confirm `docker pull alpine:3.20` succeeds first (fast, cheap
-    check), then `cp .env.example .env`, fill in `WOODPECKER_AGENT_SECRET`
-    (`openssl rand -hex 32`), run `docker-compose up -d forgejo`, and follow the
-    setup steps documented at the top of `docker-compose.yaml`.
+- **Phase 3 (Forgejo + Woodpecker triggering real builds on push and PR):** **done**,
+  via a different hosting mechanism than originally planned. `docker-compose.yaml`
+  is written and ready (see below), but Docker image pulls never became available
+  in the development environment -- every network fix attempted (VPN disconnect,
+  colima's `--network-address`/`--network-mode bridged`) made no difference (see
+  `docs/FINDINGS.md`). Rather than leave Phase 3 unverified, Forgejo and Woodpecker
+  were run as **native macOS processes** instead: Forgejo via its official Homebrew
+  formula (a real prebuilt binary), and `woodpecker-server`/`woodpecker-agent`
+  **built from source** with Go (both only need plain HTTPS to GitHub/the Go module
+  proxy, which work fine on this network) with the agent's `local` backend running
+  pipeline steps as host processes. The entire OAuth app registration and login
+  flow was automated via curl against Forgejo's and Woodpecker's own APIs -- no
+  browser needed. This produced a **fully real, webhook-triggered, end-to-end
+  proof**:
+  - A real `git push` to the local Forgejo instance fired a real webhook, which a
+    real Woodpecker agent picked up and ran -- failing exactly as expected on the
+    vulnerable samples.
+  - A real pull request (opened via Forgejo's API) triggered a real
+    `pull_request`-event pipeline. This surfaced and fixed a genuine bug: Woodpecker's
+    built-in clone step only shallow-fetches the PR commit itself (depth 1, no
+    parent history), so `git merge-base` against the target branch could never
+    find a common ancestor -- the diff-aware step silently skipped every time on a
+    real PR. Fixed by unshallowing first (now in `.woodpecker/semgrep.yaml`).
+  - With that fix, a second real PR adding one new issue correctly showed exactly
+    **1 new finding** (ignoring 13 pre-existing legacy ones); a third real PR with
+    no new issues correctly showed **0 findings** and passed, despite those same
+    legacy findings still existing in a full scan. Both the "fails on a new issue"
+    and "passes despite legacy issues" halves of the PR-diff-aware acceptance
+    criterion are now proven against a live forge, not a push-event simulation.
+  - Full details, exact commands, and log excerpts are in `docs/FINDINGS.md`.
+  - **`docker-compose.yaml` remains the intended/documented hosting mechanism** --
+    it's written, syntax-validated, and ready to use once Docker image pulls work
+    in whatever environment runs this next. The native-process path above was a
+    one-time, local verification exercise, not a replacement for it.
 - **Phase 4 (GitHub code scanning, fixed branch, offline rules, pre-commit, docs):**
   done. See `docs/FINDINGS.md` for each feature's proof.
 
 ## A note on how pipelines were tested locally without network
 
-`.woodpecker/semgrep.yaml` and `.woodpecker/semgrep-custom.yaml` are the real,
-correct pipeline definitions (container-image steps) -- that's what a working
-Woodpecker agent runs. To validate pipeline *logic* (step ordering, `when:`
-conditions, exit codes) in this network-constrained environment, a temporary copy
-with `image: semgrep/semgrep:1.180.0` swapped to `image: bash` was run via
-`woodpecker-cli exec --backend-engine local`, which executes `commands:` directly
-against the host's natively-installed `semgrep` (same `1.180.0`) instead of in a
-container. That substitution was never committed -- it's a local-only testing
-workaround, documented here and in `docs/FINDINGS.md` so it isn't mistaken for the
-real pipeline design.
+`.woodpecker/semgrep.yaml`, `.woodpecker/semgrep-custom.yaml`, and
+`.woodpecker/semgrep-offline.yaml` are the real, correct pipeline definitions
+(container-image steps) -- that's what a working Woodpecker agent runs, and what
+`docker-compose.yaml` hosts. Because Docker image pulls were never available in
+this environment, verifying them used **temporary copies** with `image:
+semgrep/semgrep:1.180.0` swapped to `image: bash`, run two ways:
+
+1. `woodpecker-cli exec --backend-engine local` (Phase 2) -- no server at all,
+   purely local simulation.
+2. A real, natively-built Woodpecker server + agent, with the agent's `local`
+   backend (Phase 3) -- full webhook/OAuth/PR flow for real, against real Forgejo
+   repos and pull requests.
+
+Both substitutions were local-only testing workarounds, never committed -- the
+repo's actual pipeline files always reference the real container images. One real
+bug was found and fixed this way regardless of the `image:` swap (the diff-aware
+clone-depth issue above), since that bug lived in the pipeline's shell logic, not
+in how the step's image was invoked.
 
 ## GitHub code scanning note
 

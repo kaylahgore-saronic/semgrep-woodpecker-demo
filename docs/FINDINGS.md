@@ -221,8 +221,11 @@ exec --backend-engine local`, which executes step `commands:` directly against t
 host's natively-installed `semgrep` (same version, `1.180.0`) instead of in a
 container. This is a deliberate, documented substitution for local testing only --
 never committed to the repo -- not a change to the actual pipeline definition.
-Phase 3 is deferred until network access is restored; see `docker-compose.yaml`'s
-header comment for the exact steps to retry once it is.
+`docker-compose.yaml` remains ready to use once Docker image pulls work in
+whatever environment runs this next (see its header comment for exact steps).
+Rather than leave Phase 3 unverified in the meantime, it was completed via a
+different route -- see "Phase 3: real Forgejo + Woodpecker, running natively (no
+Docker)" below.
 
 ## Diff-aware scanning (feature 4.2)
 
@@ -332,6 +335,110 @@ if you also upload SARIF to GitHub code scanning, the suppressed finding will st
 show up as an open alert there -- the two surfaces can disagree. Worth knowing before
 assuming "I suppressed it in code" means "it's gone everywhere."
 
-## Still to document in later phases
+## Phase 3: real Forgejo + Woodpecker, running natively (no Docker)
 
-- Real pull_request-triggered diff-aware scan once Phase 3 (Forgejo + Woodpecker-on-k8s) is unblocked.
+Docker image pulls never became available (see the environment note above, even
+after trying a VPN disconnect and colima's `--network-address`/`--network-mode
+bridged`). Rather than leave Phase 3 unverified, Forgejo and Woodpecker were run as
+**native macOS processes**, entirely sidestepping Docker/colima:
+
+- **Forgejo**: `brew install forgejo` (official Homebrew formula, a real prebuilt
+  binary, version `17.0.0`). Configured non-interactively with a hand-written
+  `app.ini` (`INSTALL_LOCK=true`, sqlite3, `ALLOWED_HOST_LIST=loopback`) to skip
+  the web install wizard entirely.
+- **Woodpecker server + agent**: built from source at tag `v3.19.0` with Go
+  `1.27.2` (`brew install go`). This needed `node`/`pnpm` too (`pnpm install &&
+  pnpm build` for the embedded web UI) and `CGO_ENABLED=1` specifically --
+  building with `CGO_ENABLED=0` (the Makefile's default for the agent) silently
+  omits the sqlite3 driver (`server/store/datastore/init_cgo.go` is gated on
+  `//go:build cgo`), producing a server binary that fails at startup with
+  `database driver 'sqlite3' not supported`. None of this touched Docker, the
+  network connectivity blocker, or any cached image -- it only needed plain HTTPS
+  to GitHub and the Go module proxy, both of which work fine on this network.
+- **Agent backend**: `WOODPECKER_BACKEND=local` (runs step `commands:` as host
+  processes). One gotcha: the agent's `--healthcheck-addr` defaults to `:3000`,
+  which collides with Forgejo's own port -- set
+  `WOODPECKER_HEALTHCHECK_ADDR=:3030` (or any other free port) to avoid two
+  processes racing for the same listener.
+- **OAuth app + login, fully automated via curl, no browser:** Forgejo's REST API
+  supports creating a user's own OAuth2 application directly
+  (`POST /api/v1/user/applications/oauth2`, needs a user token from
+  `forgejo admin user create --access-token`) -- this isn't documented prominently
+  but works exactly like the web UI flow. The subsequent 3-legged OAuth login
+  (Woodpecker's `/authorize` → Forgejo's `/login/oauth/authorize` consent page →
+  `/login/oauth/grant` with `granted=true` → back to Woodpecker's `/authorize` with
+  a `code`) was replayed step-by-step with `curl -c/-b cookies.txt`, including
+  logging into Forgejo itself with a plain `POST /user/login` (no CSRF token
+  needed for that specific endpoint in this version). The resulting Woodpecker
+  session cookie was exchanged for a real personal API token via
+  `POST /api/user/token` -- note this endpoint requires an `X-CSRF-TOKEN` header
+  even for session-cookie auth, whose value comes from `window.WOODPECKER_CSRF` in
+  the `/web-config.js` response, not from any response body or standard cookie.
+- **Repo activation**: created via Forgejo's API, pushed to via a local-only git
+  remote (`git remote add forgejo http://.../semgrep-woodpecker-demo.git`), then
+  activated in Woodpecker with `POST /api/repos?forge_remote_id=<id>` -- this
+  automatically registers the webhook on the Forgejo side (confirmed via
+  `GET /api/v1/repos/.../hooks`).
+
+### Real, webhook-triggered proof (not a `woodpecker-cli exec` simulation)
+
+Because this repo's committed pipelines reference `image: semgrep/semgrep:1.180.0`
+and the native agent has no Docker to run that image in, verification here used
+local throwaway git branches (`native-verify`, `pr-demo`, `pr-demo-clean` -- pushed
+only to the local Forgejo remote, never to the public GitHub repo or `main`/`fixed`)
+with `image:` swapped to `bash`, same as the Phase 2 `woodpecker-cli exec` testing.
+The point of this exercise wasn't the image swap (already proven safe in Phase 2)
+-- it was proving the parts Phase 2 *couldn't* reach: a real webhook firing, a real
+agent picking up real queued work, and a real pull request populating
+`CI_COMMIT_TARGET_BRANCH`/`CI_COMMIT_PULL_REQUEST` from actual PR metadata instead
+of a `woodpecker-cli exec` flag.
+
+**Push-triggered build:** `git push forgejo main` fired a real Forgejo webhook;
+Woodpecker queued and ran pipeline #1 within seconds. All three pipeline files ran
+in parallel workflows. The real failure mode this surfaced: `git lfs fetch` failed
+in the clone step (`git: 'lfs' is not a git command`) because `git-lfs` wasn't
+installed -- `brew install git-lfs` fixed it. Once fixed, a plain push correctly
+produced: `semgrep-custom` workflow success (rule validate/test pass), `semgrep-offline`
+workflow failure (custom rules correctly catch the planted issues with zero
+network), `semgrep` workflow failure (terraform-scan/kubernetes-scan/custom-rules-scan
+all correctly fail; the non-blocking/reporting steps all correctly still run and
+pass).
+
+**Real bug found via a real PR:** opening an actual pull request
+(`POST /api/v1/repos/.../pulls`, base `native-verify`, head `pr-demo` with one new
+planted issue) triggered a real `pull_request`-event pipeline. The `diff-aware-scan`
+step logged `Baseline commit: <none>` and skipped entirely -- `git merge-base`
+against the fetched target branch found no common ancestor. Root cause: Woodpecker's
+built-in clone step shallow-fetches **only the PR's own commit** (`git fetch
+--no-tags --depth=1 --filter=tree:0 origin +<sha>:`), with no parent history at all
+-- `git merge-base` can never succeed against that, no matter how deep the *target*
+branch is separately fetched. This directly contradicts what the Phase 2 research
+pass concluded (`plugin-git`'s default clone depth is "none"/full) -- that default
+evidently applies to the standalone `plugin-git` container plugin, not Woodpecker's
+different built-in clone step used when no explicit `clone:` override is
+configured, which this repo's pipelines don't set.
+
+**Fix:** `git fetch --unshallow origin 2>/dev/null || git fetch origin --depth=1000
+|| true` before computing merge-base. Applied to the real `.woodpecker/semgrep.yaml`
+on `main` and `fixed` (not just the local test branches) since this is a genuine
+pipeline-logic bug independent of backend or image.
+
+**Verified both halves of the PR acceptance criterion for real after the fix:**
+
+| PR | Base | New issue? | `diff-aware-scan` result |
+|---|---|---|---|
+| #1 (`pr-demo` → `native-verify`) | 13 pre-existing legacy findings | Yes, 1 new untagged S3 bucket | `Findings: 1 (1 blocking)` -- **only** the new bucket, none of the 13 legacy ones. Pipeline fails. |
+| #2 (`pr-demo-clean` → `native-verify`) | 7 pre-existing legacy findings (on this smaller sample) | No, doc-only change | `Findings: 0 (0 blocking)` -- passes, despite those same 7 legacy findings still existing in a full (non-diff-aware) scan of the same tree. |
+
+Both runs' logs show Semgrep's own confirmation of the mechanism:
+`Creating git worktree from '<baseline-sha>' to scan baseline` /
+`Will report findings introduced by these commits`.
+
+### What's still simulated, not real
+
+Severity gating and the offline/no-network proof (features 4.3, 4.8) were verified
+via direct `semgrep` CLI calls and the `woodpecker-cli exec`/native-agent
+pipeline runs above, not against a from-scratch fresh clone with zero local state --
+consistent with everything else in this repo, no further gap here. Nothing
+remaining is still only simulated; the one previously-open item (a real
+`pull_request`-triggered diff-aware scan) is now closed per above.
