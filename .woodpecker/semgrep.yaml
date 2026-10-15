@@ -32,6 +32,10 @@ steps:
     commands:
       - |
         if [ -n "$CI_COMMIT_PULL_REQUEST" ]; then
+          # Woodpecker's built-in clone step shallow-fetches only the PR commit
+          # itself (depth=1, no parents) -- unshallow first or merge-base can
+          # never find a common ancestor with the target branch.
+          git fetch --unshallow origin 2>/dev/null || git fetch origin --depth=1000 || true
           git fetch origin "$CI_COMMIT_TARGET_BRANCH" --depth=1000 || true
           BASELINE=$(git merge-base "origin/$CI_COMMIT_TARGET_BRANCH" HEAD || true)
         else
